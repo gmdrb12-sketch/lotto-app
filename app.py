@@ -1,9 +1,9 @@
 import streamlit as st
 import random
 import requests
+import re
 from bs4 import BeautifulSoup
 from collections import Counter
-from datetime import datetime
 
 st.set_page_config(page_title="로또 분석기", page_icon="🍀", layout="centered")
 
@@ -22,15 +22,17 @@ st.markdown("""
     .ball-21 { background: linear-gradient(135deg, #f72585, #b5179e); }
     .ball-31 { background: linear-gradient(135deg, #6c757d, #343a40); }
     .ball-41 { background: linear-gradient(135deg, #2dc653, #1a7431); }
+    .ball-bonus { background: linear-gradient(135deg, #aaa, #555); }
     .ball-row {
-        display: flex; flex-wrap: wrap; justify-content: center;
+        display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
         background: #f8f9fa; border-radius: 16px; padding: 10px;
-        margin: 6px 0; border: 1px solid #e9ecef;
+        margin: 4px 0; border: 1px solid #e9ecef;
     }
     .draw-label {
         font-size: 12px; color: #888; font-weight: 700;
-        text-align: center; margin-top: 6px;
+        text-align: center; margin-top: 8px;
     }
+    .plus-sign { color: #aaa; font-size: 18px; margin: 0 4px; line-height: 44px; }
     .combo-label {
         font-size: 13px; color: #6c757d; font-weight: 700;
         margin-bottom: 4px; text-align: center;
@@ -50,105 +52,92 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def ball_html(n, is_bonus=False):
+    if is_bonus:
+        cls = "ball-bonus"
+    elif n <= 10:   cls = "ball-1"
+    elif n <= 20:   cls = "ball-11"
+    elif n <= 30:   cls = "ball-21"
+    elif n <= 40:   cls = "ball-31"
+    else:           cls = "ball-41"
+    return f'<div class="lotto-ball {cls}">{n:02d}</div>'
+
+
+def render_draw(numbers, bonus=None):
+    html = '<div class="ball-row">'
+    for n in numbers:
+        html += ball_html(n)
+    if bonus:
+        html += '<span class="plus-sign">+</span>'
+        html += ball_html(bonus, is_bonus=True)
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def render_balls(numbers):
     html = '<div class="ball-row">'
     for n in numbers:
-        if n <= 10:   cls = "ball-1"
-        elif n <= 20: cls = "ball-11"
-        elif n <= 30: cls = "ball-21"
-        elif n <= 40: cls = "ball-31"
-        else:         cls = "ball-41"
-        html += f'<div class="lotto-ball {cls}">{n:02d}</div>'
+        html += ball_html(n)
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=1800)  # 30분 캐시
-def fetch_from_superkts(count=10):
+def fetch_from_picknum():
     """
-    superkts.com에서 최근 당첨번호 스크래핑
-    URL: https://superkts.com/lotto/recent/{count}
+    picknum.com/lotto 에서 최근 10회 당첨번호 파싱
+    HTML 구조: 각 회차 링크 텍스트에 회차번호 + 날짜 + 6개 번호 + 보너스 포함
     """
-    url = f"https://superkts.com/lotto/recent/{count}"
+    url = "https://picknum.com/lotto"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "ko-KR,ko;q=0.9",
-        "Referer": "https://superkts.com/",
+        "Referer": "https://picknum.com/",
     }
-
     res = requests.get(url, headers=headers, timeout=12)
     res.raise_for_status()
-    res.encoding = "utf-8"
-
     soup = BeautifulSoup(res.text, "html.parser")
 
     results = []
 
-    # superkts 구조: 각 회차 블록 파싱
-    # 번호는 보통 <span class="..."> 또는 <li> 안에 있음
-    # 여러 선택자를 시도해서 파싱
-    
-    # 방법 1: ul/li 기반 번호 리스트
-    draw_blocks = soup.select("ul.lotto_num_wrap, ul.ball_wrap, div.lotto_result, div.win_result")
-    
-    if not draw_blocks:
-        # 방법 2: 번호를 담은 span/li 직접 탐색
-        draw_blocks = soup.find_all("div", class_=lambda c: c and "lotto" in c.lower())
+    # 각 회차 블록: <a href="/lotto/1217회"> 형태
+    # 텍스트 내에 "1217회 2026-03-28 8 10 15 20 29 31 + 41 ..." 포함
+    draw_links = soup.select('a[href*="/lotto/"]')
 
-    if not draw_blocks:
-        # 방법 3: 전체 HTML에서 패턴으로 번호 추출
-        import re
-        # 6개 연속된 1-45 숫자 패턴 탐색
-        all_nums = re.findall(r'\b([1-9]|[1-3][0-9]|4[0-5])\b', res.text)
-        # 숫자를 6개씩 묶어서 유효한 회차 데이터로 변환 (휴리스틱)
-        nums = [int(n) for n in all_nums if 1 <= int(n) <= 45]
-        i = 0
-        while i + 5 < len(nums) and len(results) < count:
-            chunk = nums[i:i+6]
-            if len(set(chunk)) == 6:  # 중복 없는 6개
-                results.append(sorted(chunk))
-                i += 6
-            else:
-                i += 1
+    for link in draw_links:
+        href = link.get("href", "")
+        # /lotto/숫자 형태만 (목록 외 링크 제외)
+        if not re.match(r"^/lotto/\d+$", href):
+            continue
 
-    else:
-        for block in draw_blocks[:count]:
-            nums = []
-            for tag in block.find_all(["span", "li", "em", "strong"]):
-                txt = tag.get_text(strip=True)
-                if txt.isdigit() and 1 <= int(txt) <= 45:
-                    nums.append(int(txt))
-            if len(nums) >= 6:
-                results.append(sorted(nums[:6]))
+        draw_no = int(re.search(r"\d+", href).group())
+        text = link.get_text(separator=" ", strip=True)
 
-    return results, res.text  # HTML도 반환 (디버그용)
+        # 텍스트에서 1~45 사이 숫자 추출
+        nums = [int(n) for n in re.findall(r'\b([1-9]|[1-3][0-9]|4[0-5])\b', text)
+                if 1 <= int(n) <= 45]
 
+        # 중복 제거하면서 순서 유지
+        seen = []
+        for n in nums:
+            if n not in seen:
+                seen.append(n)
 
-def fetch_from_official_fallback(count=10):
-    """동행복권 공식 API fallback"""
-    from datetime import datetime
-    base_date = datetime(2002, 12, 7)
-    latest = (datetime.now() - base_date).days // 7 + 1
-    
-    results = []
-    for i in range(count):
-        draw_no = latest - i
-        try:
-            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.dhlottery.co.kr/"}
-            url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={draw_no}"
-            res = requests.get(url, headers=headers, timeout=8)
-            d = res.json()
-            if d.get("returnValue") == "success":
-                results.append({
-                    "draw": draw_no,
-                    "numbers": [d[f"drwtNo{j}"] for j in range(1, 7)],
-                    "bonus": d["bnusNo"]
-                })
-        except Exception:
-            pass
+        if len(seen) >= 7:
+            numbers = sorted(seen[:6])
+            bonus   = seen[6]
+            results.append({
+                "draw":    draw_no,
+                "numbers": numbers,
+                "bonus":   bonus,
+            })
+
+        if len(results) >= 10:
+            break
+
     return results
 
 
@@ -174,74 +163,54 @@ def weighted_unique_pick(weights, k=6):
 # ── 앱 UI ────────────────────────────────────────────────────
 
 st.title("🎰 로또 번호 분석기")
-st.caption("superkts.com 최근 10회 실시간 데이터 기반")
+st.caption("picknum.com 최근 10회 실시간 데이터 기반")
 
 with st.sidebar:
     st.header("⚙️ 설정")
     num_combos = st.slider("생성할 조합 수", 3, 10, 5)
-    show_debug = st.checkbox("디버그 모드 (파싱 확인)", False)
     st.markdown("---")
     if st.button("🔄 데이터 새로고침"):
         st.cache_data.clear()
         st.rerun()
 
 # ── 데이터 로드 ───────────────────────────────────────────────
-draw_data   = []  # [{"draw": N, "numbers": [...], "bonus": N}]
-source_label = ""
-
-with st.spinner("📡 superkts.com에서 최근 10회 데이터 수집 중..."):
+with st.spinner("📡 picknum.com에서 최근 10회 데이터 수집 중..."):
     try:
-        raw_results, html_text = fetch_from_superkts(10)
-
-        if show_debug:
-            with st.expander("🔍 파싱된 원시 데이터"):
-                st.write(raw_results)
-                st.text(html_text[:3000])
-
-        if raw_results and len(raw_results) >= 3:
-            # draw 번호는 역산
-            from datetime import datetime as dt
-            base = dt(2002, 12, 7)
-            latest_draw = (dt.now() - base).days // 7 + 1
-            for i, nums in enumerate(raw_results):
-                draw_data.append({
-                    "draw": latest_draw - i,
-                    "numbers": nums,
-                    "bonus": None
-                })
-            source_label = "superkts.com"
-        else:
-            raise ValueError("파싱 결과 부족")
-
+        draw_data = fetch_from_picknum()
+        if not draw_data:
+            raise ValueError("파싱 결과 없음")
     except Exception as e:
-        st.warning(f"⚠️ superkts.com 파싱 실패 ({e}) → 동행복권 API 시도 중...")
-        try:
-            draw_data = fetch_from_official_fallback(10)
-            source_label = "동행복권 공식 API"
-        except Exception as e2:
-            st.error(f"❌ 모든 소스 실패: {e2}")
+        st.error(f"❌ 데이터 수집 실패: {e}")
+        draw_data = []
 
 # ── 결과 표시 ─────────────────────────────────────────────────
 if draw_data:
-    st.success(f"✅ {source_label} — 최근 {len(draw_data)}회차 데이터 로드 완료")
+    latest = draw_data[0]
+    st.success(f"✅ 최근 {len(draw_data)}회차 데이터 로드 완료 (최신: {latest['draw']}회)")
 
-    # 최근 당첨번호 표시
-    with st.expander("📋 최근 당첨번호 확인", expanded=True):
-        for item in draw_data:
-            st.markdown(f'<div class="draw-label">{item["draw"]}회차</div>', unsafe_allow_html=True)
-            render_balls(item["numbers"])
+    # 최신 회차 크게 표시
+    st.subheader(f"🏆 최신 당첨번호 — {latest['draw']}회")
+    render_draw(latest["numbers"], latest["bonus"])
 
     st.markdown("---")
 
-    # 통계
+    # 최근 10회 전체 목록
+    with st.expander("📋 최근 10회 당첨번호 전체 보기", expanded=False):
+        for item in draw_data:
+            st.markdown(f'<div class="draw-label">{item["draw"]}회차</div>', unsafe_allow_html=True)
+            render_draw(item["numbers"], item["bonus"])
+
+    st.markdown("---")
+
+    # 통계 (보너스 제외, 당첨번호 6개만)
     flat_list = [n for item in draw_data for n in item["numbers"]]
     counts    = Counter(flat_list)
     weights   = [counts.get(i, 0) + 1 for i in range(1, 46)]
 
-    with st.expander("📊 번호별 출현 빈도"):
+    with st.expander("📊 번호별 출현 빈도 (최근 10회)"):
         top_nums = counts.most_common()
         cols = st.columns(5)
-        for idx, (num, cnt) in enumerate(top_nums[:15]):
+        for idx, (num, cnt) in enumerate(top_nums):
             cols[idx % 5].metric(f"{num:02d}번", f"{cnt}회")
 
     st.markdown("---")
@@ -257,7 +226,7 @@ if draw_data:
             if "랜덤" in s or i == num_combos - 1:
                 game = sorted(random.sample(range(1, 46), 6))
             elif "콜드" in s:
-                cold_w = [max(1, 15 - counts.get(n, 0)) for n in range(1, 46)]
+                cold_w = [max(1, 10 - counts.get(n, 0)) for n in range(1, 46)]
                 game = weighted_unique_pick(cold_w)
             else:
                 game = weighted_unique_pick(weights)
@@ -268,4 +237,7 @@ if draw_data:
         st.markdown('<div class="info-box">⚠️ 로또는 확률 게임입니다. 오락 목적으로만 활용하세요.</div>', unsafe_allow_html=True)
 
 else:
-    st.error("데이터를 불러올 수 없습니다. 사이드바에서 새로고침을 눌러주세요.")
+    st.error("데이터를 불러올 수 없습니다.")
+    if st.button("🔄 다시 시도"):
+        st.cache_data.clear()
+        st.rerun()
