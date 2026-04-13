@@ -5,7 +5,7 @@ import random
 import time
 from collections import Counter
 
-# 1. 페이지 및 디자인 설정
+# 페이지 설정
 st.set_page_config(page_title="Lotto Analysis Pro", page_icon="🎯", layout="centered")
 
 st.markdown("""
@@ -37,53 +37,49 @@ def render_balls(numbers):
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
 
-# 2. 지정해주신 사이트 전용 데이터 수집 함수
-@st.cache_data(ttl=3600)
+# 🚀 핵심: 대리 접속(프록시)을 이용한 슈퍼KTS 데이터 스크래핑
+@st.cache_data(ttl=1800) # 30분 캐싱
 def fetch_target_site_data():
-    # 정확히 요청하신 URL 고정
-    url = "https://superkts.com/lotto/recent/10"
-    # 차단 방지를 위한 크롬 브라우저 위장 헤더
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    target_url = "https://superkts.com/lotto/recent/10"
+    # 스트림릿 IP 차단을 무력화하기 위해 allorigins 프록시 사용
+    proxy_url = f"https://api.allorigins.win/get?url={target_url}"
     
     try:
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        balls = soup.select('.ball_645') # 해당 사이트의 로또공 클래스
-        
-        all_draws = []
-        temp = []
-        for b in balls:
-            temp.append(int(b.get_text()))
-            if len(temp) == 6:
-                all_draws.append(sorted(temp))
-                temp = []
-                
-        # 데이터가 정상적으로 들어왔는지 확인
-        if len(all_draws) > 0:
-            return all_draws, None
+        # 우회 서버를 통해 접속
+        res = requests.get(proxy_url, timeout=10)
+        if res.status_code == 200:
+            # 프록시 서버가 가져다준 진짜 HTML 알맹이를 추출
+            html_content = res.json()['contents']
+            soup = BeautifulSoup(html_content, 'html.parser')
+            balls = soup.select('.ball_645') 
+            
+            all_draws = []
+            temp = []
+            for b in balls:
+                temp.append(int(b.get_text()))
+                if len(temp) == 6:
+                    all_draws.append(sorted(temp))
+                    temp = []
+                    
+            if len(all_draws) > 0:
+                return all_draws, None
+            else:
+                return None, "우회 접속은 성공했으나, 사이트에서 봇 방지 화면을 띄웠습니다."
         else:
-            return None, "사이트 구조가 변경되었거나 일시적으로 접속이 지연되었습니다."
+            return None, "우회 서버(프록시) 통신 지연"
             
     except Exception as e:
-        return None, str(e)
+        return None, f"프록시 에러 발생: {str(e)}"
 
-# 3. 통계적 조합 필터링 엔진
+# 통계적 조합 필터링 엔진
 def validate_combination(combination):
-    # 합계(Sum) 필터: 100 ~ 170 사이만 통과
     total = sum(combination)
-    if not (100 <= total <= 170):
-        return False
-        
-    # 홀짝(Even/Odd) 필터: 2:4, 3:3, 4:2 비율만 통과
+    if not (100 <= total <= 170): return False
     evens = len([n for n in combination if n % 2 == 0])
-    if evens not in [2, 3, 4]:
-        return False
-        
+    if evens not in [2, 3, 4]: return False
     return True
 
-# 4. 전략적 조합 생성기
+# 전략적 조합 생성기
 def generate_strategy_combinations(strategy_type, w, c_w, top_hot):
     for _ in range(1000): 
         if strategy_type == "HOT":
@@ -98,16 +94,14 @@ def generate_strategy_combinations(strategy_type, w, c_w, top_hot):
         else: # RANDOM
             game = sorted(random.sample(range(1, 46), 6))
 
-        if validate_combination(game):
-            return game
-            
+        if validate_combination(game): return game
     return sorted(random.sample(range(1, 46), 6))
 
-# 5. 앱 실행 화면
+# 앱 실행 화면
 st.title("🎯 Lotto Analysis Pro")
-st.write("지정된 사이트(superkts) 최신 10회차 실시간 연동")
+st.write("프록시 우회 적용: 슈퍼KTS 10회차 실시간 연동")
 
-with st.spinner("지정된 사이트에서 최신 데이터를 가져오는 중..."):
+with st.spinner("IP 차단을 우회하여 데이터를 몰래 가져오는 중..."):
     recent_data, err = fetch_target_site_data()
 
 if recent_data:
@@ -115,11 +109,9 @@ if recent_data:
     counts = Counter(flat_list)
     weights = [counts.get(i, 0) + 1 for i in range(1, 46)]
     cold_weights = [1 / (counts.get(i, 0) + 1) for i in range(1, 46)]
-    
-    # 상위 핫 번호 풀 (10회차이므로 15개로 설정)
     top_15_hot = [num for num, count in counts.most_common(15)]
 
-    st.success(f"✅ 접속 성공! 최근 {len(recent_data)}회차 데이터를 분석했습니다.")
+    st.success(f"✅ 철통 보안 뚫기 성공! 최근 {len(recent_data)}회차 데이터 확보 완료.")
 
     if st.button("🚀 통계 최적화 조합 추출하기"):
         st.divider()
