@@ -1,11 +1,13 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import random
 from collections import Counter
+from datetime import datetime
 
-st.set_page_config(page_title="슈퍼KTS 분석기 Pro (10회차)", page_icon="🎯", layout="centered")
+# 1. 페이지 설정
+st.set_page_config(page_title="실시간 분석기 Pro (10회차)", page_icon="🎯", layout="centered")
 
+# 2. 로또공 그래픽 디자인 (CSS)
 st.markdown("""
     <style>
     .lotto-ball {
@@ -36,31 +38,53 @@ def render_balls(numbers):
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
 
-def fetch_data():
-    url = "https://superkts.com/lotto/recent/10"
+# 3. 데이터 수집 함수 (superkts 차단 우회를 위한 안정형 API 사용)
+@st.cache_data(ttl=3600)
+def fetch_10_draws():
+    base_date = datetime(2002, 12, 7)
+    latest_draw = (datetime.now() - base_date).days // 7 + 1
+    
+    all_draws = []
     headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        balls = soup.select('.ball_645')
+    
+    for i in range(10):
+        draw_no = latest_draw - i
+        success = False
         
-        all_draws = []
-        temp = []
-        for b in balls:
-            temp.append(int(b.get_text()))
-            if len(temp) == 6:
-                all_draws.append(temp)
-                temp = []
-        return all_draws, None
-    except Exception as e:
-        return None, str(e)
+        # 1순위: 마나나 오픈 API (속도 빠름, 차단 없음)
+        try:
+            res = requests.get(f"https://api.manana.kr/lotto.json?draw={draw_no}", timeout=3)
+            if res.status_code == 200:
+                data = res.json()[0]
+                nums = [int(data[f"num{j}"]) for j in range(1, 7)]
+                all_draws.append(sorted(nums))
+                success = True
+        except:
+            pass
+            
+        # 2순위: 동행복권 공식 서버 (1순위 실패 시 백업)
+        if not success:
+            try:
+                res = requests.get(f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={draw_no}", headers=headers, timeout=3)
+                data = res.json()
+                if data.get("returnValue") == "success":
+                    nums = [data[f"drwtNo{j}"] for j in range(1, 7)]
+                    all_draws.append(sorted(nums))
+            except:
+                pass
 
-st.title("🎯 슈퍼KTS 실시간 분석기 (10회차)")
-st.write("제공해주신 사이트의 최신 10회차 데이터를 실시간 분석합니다.")
+    if len(all_draws) > 0:
+        return all_draws, None
+    else:
+        return None, "모든 데이터 서버가 접근을 차단했습니다."
+
+# 4. 메인 화면 구성
+st.title("🎯 실시간 로또 분석기 (10회차)")
+st.write("안정적인 오픈 API 서버를 통해 최신 10회차 데이터를 실시간 분석합니다.")
 
 if 'lotto_data' not in st.session_state:
-    with st.spinner("🔄 데이터 가져오는 중..."):
-        data, err = fetch_data()
+    with st.spinner("🔄 데이터를 가져오는 중... (최초 1회 약 3초 소요)"):
+        data, err = fetch_10_draws()
         st.session_state.lotto_data = data
         st.session_state.err = err
 
@@ -68,6 +92,7 @@ data = st.session_state.lotto_data
 err = st.session_state.err
 
 if data:
+    # 통계 분석
     flat_list = [n for draw in data for n in draw]
     counts = Counter(flat_list)
     weights = [counts.get(i, 0) + 1 for i in range(1, 46)]
@@ -78,11 +103,12 @@ if data:
         st.balloons()
         for i in range(5):
             st.write(f"**추천 조합 {i+1}**")
+            # 4게임은 가중치, 1게임은 완전 랜덤
             game = sorted(random.choices(range(1, 46), weights=weights, k=6)) if i < 4 else sorted(random.sample(range(1, 46), 6))
             render_balls(game)
 else:
     st.error("데이터 수집에 실패했습니다.")
-    st.info(f"원인: {err if err else '서버 연결 끊김'}")
+    st.info(f"원인: {err}")
     if st.button("🔄 다시 시도"):
         st.session_state.clear()
         st.rerun()
