@@ -35,7 +35,7 @@ def render_balls(numbers):
         elif n <= 30: cls = "ball-3"
         elif n <= 40: cls = "ball-4"
         else: cls = "ball-5"
-        html += f f'<div class="lotto-ball {cls}">{n:02d}</div>'
+        html += f'<div class="lotto-ball {cls}">{n:02d}</div>'
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
 
